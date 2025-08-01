@@ -17,7 +17,6 @@ import {
 } from 'electron';
 import { Buffer } from 'node:buffer';
 import { MouseUpEvent } from './types/electron';
-
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import started from 'electron-squirrel-startup';
@@ -676,23 +675,7 @@ const createChat = async (
         function setConfig() {
           try {
             if (window.localStorage) {
-              const existingConfig = localStorage.getItem('gooseConfig');
-              let finalConfig = '${configStr}';
-              
-              if (existingConfig) {
-                try {
-                  const existingParsed = JSON.parse(existingConfig);
-                  if (existingParsed.recipe) {
-                    const newParsed = JSON.parse('${configStr}');
-                    const mergedConfig = { ...newParsed, recipe: existingParsed.recipe };
-                    finalConfig = JSON.stringify(mergedConfig);
-                  }
-                } catch (e) {
-                  console.error('Failed to parse existing config:', e);
-                }
-              }
-              
-              localStorage.setItem('gooseConfig', finalConfig);
+              localStorage.setItem('gooseConfig', '${configStr}');
               return true;
             }
           } catch (e) {

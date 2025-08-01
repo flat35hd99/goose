@@ -242,43 +242,9 @@ const electronAPI: ElectronAPI = {
     ipcRenderer.invoke('record-recipe-hash', recipeConfig),
 };
 
-const DYNAMIC_KEYS = ['recipe']; // Keys that can be updated via localStorage
-
 const appConfigAPI: AppConfigAPI = {
-  get: (key: string) => {
-    if (DYNAMIC_KEYS.includes(key)) {
-      try {
-        if (window.localStorage) {
-          const storedConfig = localStorage.getItem('gooseConfig');
-          if (storedConfig) {
-            const parsedStoredConfig = JSON.parse(storedConfig);
-            if (Object.prototype.hasOwnProperty.call(parsedStoredConfig, key)) {
-              return parsedStoredConfig[key];
-            }
-          }
-        }
-      } catch (e) {
-        console.warn('Failed to parse stored config from localStorage:', e);
-      }
-    }
-
-    return config[key];
-  },
-  getAll: () => {
-    try {
-      if (window.localStorage) {
-        const storedConfig = localStorage.getItem('gooseConfig');
-        if (storedConfig) {
-          const parsedStoredConfig = JSON.parse(storedConfig);
-          return { ...config, ...parsedStoredConfig };
-        }
-      }
-    } catch (e) {
-      console.warn('Failed to parse stored config from localStorage:', e);
-    }
-
-    return config;
-  },
+  get: (key: string) => config[key],
+  getAll: () => config,
 };
 
 // Expose the APIs
