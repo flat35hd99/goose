@@ -609,6 +609,71 @@ impl Agent {
         (request_id, result)
     }
 
+    /// Add multiple extensions concurrently
+    pub async fn add_extensions(&self, extensions: Vec<ExtensionConfig>) -> Vec<(String, ExtensionResult<()>)> {
+        if extensions.is_empty() {
+            return vec![];
+        }
+
+        let mut frontend_extensions = Vec::new();
+        let mut other_extensions = Vec::new();
+
+        // Separate frontend and non-frontend extensions
+        for ext in extensions {
+            match &ext {
+                ExtensionConfig::Frontend { .. } => frontend_extensions.push(ext),
+                _ => other_extensions.push(ext),
+            }
+        }
+
+        let mut all_results = Vec::new();
+
+        // Handle frontend extensions synchronously (they're quick)
+        for ext in frontend_extensions {
+            let ext_name = ext.name();
+            let result = self.add_extension(ext).await;
+            all_results.push((ext_name, result));
+        }
+
+        // Handle other extensions concurrently via extension manager
+        if !other_extensions.is_empty() {
+            let mut extension_manager = self.extension_manager.write().await;
+            let results = extension_manager.add_extensions(other_extensions).await;
+            all_results.extend(results);
+        }
+
+        // If vector tool selection is enabled, update indices
+        let selector = self.tool_route_manager.get_router_tool_selector().await;
+        if ToolRouterIndexManager::is_tool_router_enabled(&selector) {
+            if let Some(selector) = selector {
+                let extension_manager = self.extension_manager.read().await;
+                let selector = Arc::new(selector);
+
+                // Update tool indices for successfully added extensions
+                for (ext_name, result) in &all_results {
+                    if result.is_ok() {
+                        if let Err(e) = ToolRouterIndexManager::update_extension_tools(
+                            &selector,
+                            &extension_manager,
+                            ext_name,
+                            "add",
+                        )
+                        .await
+                        {
+                            tracing::warn!(
+                                extension = %ext_name,
+                                error = %e,
+                                "Failed to update tool index for extension"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        all_results
+    }
+
     pub async fn add_extension(&self, extension: ExtensionConfig) -> ExtensionResult<()> {
         match &extension {
             ExtensionConfig::Frontend {
