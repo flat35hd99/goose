@@ -120,9 +120,68 @@ impl ExtensionManager {
         !self.resource_capable_extensions.is_empty()
     }
 
+    /// Add multiple extensions concurrently for faster startup
+    pub async fn add_extensions(&mut self, configs: Vec<ExtensionConfig>) -> Vec<(String, ExtensionResult<()>)> {
+        if configs.is_empty() {
+            return vec![];
+        }
+
+        // Create futures for all extension initializations
+        let mut futures = FuturesUnordered::new();
+        
+        for config in configs {
+            let config_name = config.key().to_string();
+            futures.push(async move {
+                let result = Self::create_client_from_config(config).await;
+                (config_name, result)
+            });
+        }
+
+        let mut results = Vec::new();
+        let mut successful_extensions = Vec::new();
+
+        // Wait for all extensions to initialize
+        while let Some((config_name, result)) = futures.next().await {
+            match &result {
+                Ok((sanitized_name, client, info, temp_dir)) => {
+                    successful_extensions.push((
+                        config_name.clone(),
+                        sanitized_name.clone(),
+                        client.clone(),
+                        info.clone(),
+                        temp_dir.clone(),
+                    ));
+                }
+                Err(_) => {
+                    // Log error but continue with other extensions
+                    tracing::warn!(
+                        extension = %config_name,
+                        error = ?result,
+                        "Failed to initialize extension"
+                    );
+                }
+            }
+            results.push((config_name, result.map(|_| ())));
+        }
+
+        // Add all successful extensions to the manager
+        for (_config_name, sanitized_name, client, info, temp_dir) in successful_extensions {
+            self.add_initialized_extension(sanitized_name, client, info, temp_dir);
+        }
+
+        results
+    }
+
     /// Add a new MCP extension based on the provided client type
     // TODO IMPORTANT need to ensure this times out if the extension command is broken!
     pub async fn add_extension(&mut self, config: ExtensionConfig) -> ExtensionResult<()> {
+        let (sanitized_name, client, info, temp_dir) = Self::create_client_from_config(config).await?;
+        self.add_initialized_extension(sanitized_name, client, info, temp_dir);
+        Ok(())
+    }
+
+    /// Create an MCP client from configuration (separated for reuse)
+    async fn create_client_from_config(config: ExtensionConfig) -> ExtensionResult<(String, Box<dyn McpClientTrait>, Option<rmcp::model::InitializeResult>, Option<tempfile::TempDir>)> {
         let config_name = config.key().to_string();
         let sanitized_name = normalize(config_name.clone());
 
@@ -182,6 +241,8 @@ impl ExtensionManager {
 
             Ok(all_envs)
         }
+
+        let mut temp_dir = None;
 
         let client: Box<dyn McpClientTrait> = match &config {
             ExtensionConfig::Sse { uri, timeout, .. } => {
@@ -347,8 +408,8 @@ impl ExtensionManager {
                 dependencies,
                 ..
             } => {
-                let temp_dir = tempdir()?;
-                let file_path = temp_dir.path().join(format!("{}.py", name));
+                let temp_dir_instance = tempdir()?;
+                let file_path = temp_dir_instance.path().join(format!("{}.py", name));
                 std::fs::write(&file_path, code)?;
 
                 let command = Command::new("uvx").configure(|command| {
@@ -372,26 +433,37 @@ impl ExtensionManager {
                     .await?,
                 );
 
-                self.temp_dirs.insert(sanitized_name.clone(), temp_dir);
-
+                temp_dir = Some(temp_dir_instance);
                 client
             }
             _ => unreachable!(),
         };
 
-        let info = client.get_info();
-        if let Some(instructions) = info.and_then(|info| info.instructions.as_ref()) {
-            self.instructions
-                .insert(sanitized_name.clone(), instructions.clone());
+        let info = client.get_info().cloned();
+        Ok((sanitized_name, client, info, temp_dir))
+    }
+
+    /// Add an already initialized extension to the manager
+    fn add_initialized_extension(
+        &mut self,
+        sanitized_name: String,
+        client: Box<dyn McpClientTrait>,
+        info: Option<rmcp::model::InitializeResult>,
+        temp_dir: Option<tempfile::TempDir>,
+    ) {
+        if let Some(instructions) = info.and_then(|info| info.instructions) {
+            self.instructions.insert(sanitized_name.clone(), instructions);
         }
 
-        if let Some(_resources) = info.and_then(|info| info.capabilities.resources.as_ref()) {
-            self.resource_capable_extensions
-                .insert(sanitized_name.clone());
+        if let Some(_resources) = info.and_then(|info| info.capabilities.resources) {
+            self.resource_capable_extensions.insert(sanitized_name.clone());
         }
 
-        self.add_client(sanitized_name, client);
-        Ok(())
+        if let Some(temp_dir) = temp_dir {
+            self.temp_dirs.insert(sanitized_name.clone(), temp_dir);
+        }
+
+        self.clients.insert(sanitized_name, Arc::new(Mutex::new(client)));
     }
 
     pub fn add_client(&mut self, client_name: String, client: Box<dyn McpClientTrait>) {
